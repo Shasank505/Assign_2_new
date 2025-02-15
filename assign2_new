@@ -1,0 +1,259 @@
+-- Table Definitions
+
+CREATE TABLE Customers (
+    CustomerID SERIAL PRIMARY KEY,                -- Unique ID for each customer
+    Name VARCHAR(255) NOT NULL,                   -- Customer's name
+    Email VARCHAR(255) UNIQUE NOT NULL,           -- Customer's email (must be unique)
+    RegistrationDate TIMESTAMP DEFAULT NOW()      -- Date and time of customer registration
+);
+
+CREATE TABLE Products (
+    ProductID SERIAL PRIMARY KEY,                 -- Unique ID for each product
+    ProductName VARCHAR(255) NOT NULL,            -- Name of the product
+    Category VARCHAR(255) NOT NULL,               -- Category of the product
+    Price DECIMAL(10,2) NOT NULL CHECK (Price >= 0),  -- Price of the product (non-negative)
+    Stock INT NOT NULL CHECK (Stock >= 0)         -- Stock quantity (non-negative)
+);
+
+CREATE TABLE Orders (
+    OrderID SERIAL PRIMARY KEY,                   -- Unique ID for each order
+    CustomerID INT REFERENCES Customers(CustomerID) ON DELETE CASCADE,  -- ID of the customer placing the order
+    OrderDate TIMESTAMP DEFAULT NOW(),            -- Date and time of the order
+    TotalAmount DECIMAL(10,2) NOT NULL DEFAULT 0  -- Total amount of the order
+);
+
+CREATE TABLE OrderDetails (
+    OrderDetailID SERIAL PRIMARY KEY,             -- Unique ID for each order detail
+    OrderID INT REFERENCES Orders(OrderID) ON DELETE CASCADE,  -- ID of the order
+    ProductID INT REFERENCES Products(ProductID) ON DELETE CASCADE,  -- ID of the product
+    Quantity INT NOT NULL CHECK (Quantity > 0),   -- Quantity of the product ordered (must be positive)
+    Subtotal DECIMAL(10,2) NOT NULL CHECK (Subtotal >= 0)  -- Subtotal for the order detail (non-negative)
+);
+
+-- Insert Sample Data
+-- Insert sample customers
+INSERT INTO Customers (Name, Email) VALUES
+('Shashank Pandey', 'shashank@example.com'),
+('Anil', 'anil@example.com'),
+('Nikhil', 'nikhil@example.com'),
+('Davidputra', 'davidputra@example.com'),
+('jethalal', 'jethalal@example.com');
+
+-- Insert sample products
+INSERT INTO Products (ProductName, Category, Price, Stock) VALUES
+('Laptop', 'Electronics', 1200.00, 10),
+('Smartphone', 'Electronics', 800.00, 15),
+('Headphones', 'Accessories', 150.00, 30),
+('Tablet', 'Electronics', 500.00, 12),
+('Smartwatch', 'Accessories', 200.00, 20);
+
+-- Insert sample orders
+INSERT INTO Orders (CustomerID, OrderDate, TotalAmount) VALUES
+(1, '2024-08-15', 1400.00),
+(2, '2024-11-20', 950.00),
+(3, '2025-01-10', 1800.00),
+(4, '2025-02-05', 700.00),
+(5, NOW(), 1600.00);
+
+-- Insert sample order details
+INSERT INTO OrderDetails (OrderID, ProductID, Quantity, Subtotal) VALUES
+(1, 1, 1, 1200.00),
+(1, 3, 2, 300.00),
+(2, 2, 1, 800.00),
+(2, 4, 1, 500.00),
+(3, 1, 1, 1200.00);
+
+-- Indexes for Performance
+-- Create indexes to improve query performance
+CREATE INDEX idx_orders_customer ON Orders(CustomerID);
+CREATE INDEX idx_orderdetails_order ON OrderDetails(OrderID);
+CREATE INDEX idx_orderdetails_product ON OrderDetails(ProductID);
+
+
+
+
+-- TASK 1: Advanced SQL Queries
+
+-- 1. Retrieve the top 3 customers with the highest total purchase amount
+SELECT CustomerID, SUM(TotalAmount) AS TotalSpent
+FROM Orders
+GROUP BY CustomerID
+ORDER BY TotalSpent DESC
+LIMIT 3;
+
+-- Approach: Aggregate total purchase amounts for each customer and sort them in descending order to find the top 3 customers.
+
+
+
+-- 2. Show monthly sales revenue for the last 6 months using PIVOT (crosstab function)
+CREATE EXTENSION IF NOT EXISTS tablefunc;
+
+WITH MonthlySales AS (
+    -- Calculate total sales per month for the last 6 months
+    SELECT
+        TO_CHAR(o.OrderDate, 'YYYY-MM') AS Month,
+        SUM(o.TotalAmount) AS TotalSales
+    FROM Orders o
+    WHERE o.OrderDate >= CURRENT_DATE - INTERVAL '6 months'
+    GROUP BY TO_CHAR(o.OrderDate, 'YYYY-MM')
+)
+-- Pivot the results to display monthly sales revenue
+SELECT
+    ms.Month,
+    COALESCE(SUM(CASE WHEN ms.Month = '2024-08' THEN ms.TotalSales END), 0) AS "2024-08",
+    COALESCE(SUM(CASE WHEN ms.Month = '2024-09' THEN ms.TotalSales END), 0) AS "2024-09",
+    COALESCE(SUM(CASE WHEN ms.Month = '2024-10' THEN ms.TotalSales END), 0) AS "2024-10",
+    COALESCE(SUM(CASE WHEN ms.Month = '2024-11' THEN ms.TotalSales END), 0) AS "2024-11",
+    COALESCE(SUM(CASE WHEN ms.Month = '2024-12' THEN ms.TotalSales END), 0) AS "2024-12",
+    COALESCE(SUM(CASE WHEN ms.Month = '2025-01' THEN ms.TotalSales END), 0) AS "2025-01"
+FROM MonthlySales ms
+WHERE ms.Month IN ('2024-08', '2024-09', '2024-10', '2024-11', '2024-12', '2025-01')
+GROUP BY ms.Month
+ORDER BY ms.Month;
+
+-- Approach: Use the `tablefunc` extension and a common table expression (CTE) to calculate monthly sales revenue for the last 6 months and pivot the results.
+
+
+
+-- 3. Find the second most expensive product in each category using window functions
+SELECT ProductID, ProductName, Category, Price
+FROM (
+    -- Rank products by price within each category
+    SELECT ProductID, ProductName, Category, Price,
+           RANK() OVER (PARTITION BY Category ORDER BY Price DESC) AS Rank
+    FROM Products
+) ranked_products
+-- Select the second most expensive products
+WHERE Rank = 2;
+
+-- Approach: Use the `RANK()` window function to rank products by price within each category and select the second most expensive products.
+
+
+
+
+-- TASK 2: Stored Procedures and Functions
+
+-- 1. Create a stored procedure to place an order, which:
+-- Deducts stock from the Products table.
+-- Inserts data into the Orders and OrderDetails tables.
+-- Returns the new OrderId.
+
+CREATE OR REPLACE FUNCTION place_order(customer_id INT, product_details JSONB) 
+RETURNS INT AS $$
+DECLARE 
+    new_order_id INT;
+    product JSONB;
+BEGIN
+    -- Insert new order
+    INSERT INTO Orders (CustomerID, OrderDate, TotalAmount) 
+    VALUES (customer_id, NOW(), 0) 
+    RETURNING OrderID INTO new_order_id;
+    
+    -- Process each product in JSON array
+    FOR product IN 
+        SELECT * FROM jsonb_array_elements(product_details) 
+    LOOP
+        -- Check stock availability
+        IF (SELECT Stock FROM Products WHERE ProductID = (product->>'product_id')::INT) < (product->>'quantity')::INT THEN
+            RAISE EXCEPTION 'Not enough stock for product ID %', (product->>'product_id')::INT;
+        END IF;
+        
+        -- Insert order details
+        INSERT INTO OrderDetails (OrderID, ProductID, Quantity, Subtotal)
+        VALUES (new_order_id, (product->>'product_id')::INT, (product->>'quantity')::INT, 
+                (SELECT Price * (product->>'quantity')::INT FROM Products WHERE ProductID = (product->>'product_id')::INT));
+        
+        -- Deduct stock
+        UPDATE Products SET Stock = Stock - (product->>'quantity')::INT WHERE ProductID = (product->>'product_id')::INT;
+    END LOOP;
+    
+    -- Update total amount
+    UPDATE Orders SET TotalAmount = (SELECT SUM(Subtotal) FROM OrderDetails WHERE OrderID = new_order_id)
+    WHERE OrderID = new_order_id;
+    
+    RETURN new_order_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Approach: Insert a new order, process each product in a JSON array, check stock availability, update order details, deduct stock, and update the total amount.
+
+
+-- 2. Write a user-defined function that takes a CustomerID and returns the total amount spent by that customer.
+CREATE OR REPLACE FUNCTION get_total_spent(customer_id INT)
+RETURNS DECIMAL AS $$
+DECLARE
+    total_spent DECIMAL;
+BEGIN
+    -- Calculate the total amount spent by the customer by summing the TotalAmount of their orders
+    SELECT SUM(o.TotalAmount)
+    INTO total_spent
+    FROM Orders o
+    WHERE o.CustomerID = customer_id;
+
+    -- Return the total spent amount, if no orders, return 0
+    IF total_spent IS NULL THEN
+        RETURN 0;
+    ELSE
+        RETURN total_spent;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Approach: Calculate and return the total amount spent by a customer by summing the total amounts of their orders.
+
+SELECT get_total_spent(2); -- Replace 2 with the CustomerID you're querying for.
+
+
+
+
+
+--Task 3: Transactions and Concurrency Control
+
+
+
+
+
+-- TASK 4: Advanced SQL Queries with Analytical Functions
+
+-- 1. Retrieve total purchases for each customer and a grand total using ROLLUP
+
+SELECT 
+    COALESCE(c.Name, 'Total') AS CustomerName, -- Use COALESCE to replace NULL with 'Total' for the grand total row
+    SUM(o.TotalAmount) AS TotalPurchases -- Sum the total amounts for each customer
+FROM 
+    Customers c
+JOIN 
+    Orders o ON c.CustomerID = o.CustomerID -- Join Orders with Customers on CustomerID
+GROUP BY 
+    ROLLUP(c.Name); -- Use ROLLUP to add a grand total row
+
+-- Approach:
+-- - The query joins the Customers and Orders tables to retrieve the total purchases for each customer.
+-- - The GROUP BY ROLLUP clause is used to generate subtotal and grand total rows.
+-- - COALESCE is used to replace the NULL value in the grand total row with 'Total'.
+
+
+
+
+-- 2. Retrieve order details along with previous and next order amounts for each customer
+
+SELECT
+    o.CustomerID, -- Customer ID
+    c.Name AS CustomerName, -- Customer Name
+    o.OrderID, -- Order ID
+    o.OrderDate, -- Order Date
+    o.TotalAmount, -- Total Amount for the order
+    LAG(o.TotalAmount) OVER (PARTITION BY o.CustomerID ORDER BY o.OrderDate) AS PreviousOrderAmount, -- Amount of the previous order
+    LEAD(o.TotalAmount) OVER (PARTITION BY o.CustomerID ORDER BY o.OrderDate) AS NextOrderAmount -- Amount of the next order
+FROM
+    Orders o
+JOIN
+    Customers c ON o.CustomerID = c.CustomerID -- Join Orders with Customers on CustomerID
+ORDER BY
+    o.CustomerID, -- Order by Customer ID
+    o.OrderDate; -- Order by Order Date
+
+-- Approach:
+-- - The query joins the Orders and Customers tables to retrieve detailed order information for each customer.
+-- - LAG and LEAD window functions are used to retrieve the amounts of the previous and next orders for each customer, respectively.
+-- - The results are ordered by Customer ID and Order Date to ensure the correct sequence of orders.
